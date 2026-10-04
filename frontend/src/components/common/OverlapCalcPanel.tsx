@@ -8,6 +8,8 @@ export interface OverlapCalcPanelProps {
   metrics: RouteMetrics;
   onSave?: () => void;
   savedText?: string;
+  /** 只读模式（查看已冻结批次时禁用参数与保存） */
+  disabled?: boolean;
 }
 
 type SortieRow = { sortie: number; photos: number; durationMin: number };
@@ -22,7 +24,7 @@ const columns: NonNullable<TableProps<SortieRow>['columns']> = [
  * 重叠率 / 航高 / 航速表单与 GSD、航线间距、预计张数的实时回算面板。
  * 被航线规划页（/missions/:id/route）与相机预设页（/settings/camera）消费。
  */
-export default function OverlapCalcPanel({ params, onChange, metrics, onSave, savedText }: OverlapCalcPanelProps) {
+export default function OverlapCalcPanel({ params, onChange, metrics, onSave, savedText, disabled = false }: OverlapCalcPanelProps) {
   return (
     <Space direction="vertical" size={12} style={{ width: '100%' }} data-testid="overlap-calc-panel">
       <Card size="small" title="航线参数">
@@ -35,6 +37,7 @@ export default function OverlapCalcPanel({ params, onChange, metrics, onSave, sa
               max={600}
               step={5}
               value={params.altitude}
+              disabled={disabled}
               onChange={(v) => onChange({ altitude: Number(v ?? 0) })}
             />
           </Col>
@@ -46,23 +49,24 @@ export default function OverlapCalcPanel({ params, onChange, metrics, onSave, sa
               max={25}
               step={0.5}
               value={params.speed}
+              disabled={disabled}
               onChange={(v) => onChange({ speed: Number(v ?? 0) })}
             />
           </Col>
           <Col span={24}>
             <Typography.Text type="secondary">航向重叠率 {params.overlapForward} %</Typography.Text>
-            <Slider min={50} max={90} value={params.overlapForward} onChange={(v) => onChange({ overlapForward: v })} />
+            <Slider min={50} max={90} value={params.overlapForward} disabled={disabled} onChange={(v) => onChange({ overlapForward: v })} />
           </Col>
           <Col span={24}>
             <Typography.Text type="secondary">旁向重叠率 {params.overlapSide} %</Typography.Text>
-            <Slider min={40} max={90} value={params.overlapSide} onChange={(v) => onChange({ overlapSide: v })} />
+            <Slider min={40} max={90} value={params.overlapSide} disabled={disabled} onChange={(v) => onChange({ overlapSide: v })} />
           </Col>
           <Col span={24}>
             <Typography.Text type="secondary">航带方向（°）</Typography.Text>
-            <Slider min={0} max={180} value={params.heading} onChange={(v) => onChange({ heading: v })} />
+            <Slider min={0} max={180} value={params.heading} disabled={disabled} onChange={(v) => onChange({ heading: v })} />
           </Col>
         </Row>
-        {onSave ? (
+        {!disabled && onSave ? (
           <>
             <Divider style={{ margin: '10px 0' }} />
             <Space>

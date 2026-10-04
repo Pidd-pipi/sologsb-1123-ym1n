@@ -67,12 +67,12 @@ sologsb-1123/
         ├── index.css
         ├── vite-env.d.ts
         ├── router/index.tsx
-        ├── types/{mission,waypoint,flightline,imageasset}.ts
-        ├── stores/{mission,waypoint,asset}Store.ts
-        ├── components/common/{AmapRouteView,OverlapCalcPanel,AssetGrid,MissionCard}.tsx
-        ├── hooks/{useMissionFilter,useRouteMetrics}.ts
+        ├── types/{mission,waypoint,flightline,imageasset,routeBatch}.ts
+        ├── stores/{mission,waypoint,asset,routeBatch}Store.ts
+        ├── components/common/{AmapRouteView,OverlapCalcPanel,AssetGrid,MissionCard,BatchSwitcher,BatchBanners}.tsx
+        ├── hooks/{useMissionFilter,useRouteMetrics,useMissionBatches}.ts
         ├── pages/{MissionList,RoutePlanner,WaypointTable,AssetCatalog,CameraPreset}.tsx
-        └── utils/{db,geoCalc,amapLoader,id}.ts
+        └── utils/{db,geoCalc,amapLoader,id,liveParams}.ts
 ```
 
 ## 页面与路由
@@ -95,10 +95,23 @@ sologsb-1123/
 - **预计张数** = Σ(每条航带长度 / 拍照间隔 + 1)；**预计耗时** = (总航程 / 航速 + 转弯与悬停附加) / 60；**电池组数** 按 20 min 有效续航向上取整
 - **测区面积**：经纬度投影到米制后用鞋带公式；**航带路径长度**：逐段球面近似距离累加
 
+## 航线批次（多标签页并发编辑）
+
+飞行员常在多个标签页同时编辑同一次航拍。测区、航高、重叠率或相机参数一改，航点和已拍成果就用错了旧数。为此任务引入**航线批次**：
+
+- **参数改动 → 预计张数立即失效重算**：在航线规划页改航高 / 重叠率 / 航向 / 相机参数后，当前批次的「预计张数」立即标记为失效（橙色标签），并按新参数实时回算；保存后以新批次为准。
+- **新改动进入新批次，航点冻结在旧批次**：保存时在一个事务里冻结当前批次（航点随之冻结为历史快照，只读不可改），并新建活动批次；新批次复制原航点为可编辑副本，继续作业。
+- **已拍成果跟随拍摄时批次**：成果影像条目（ImageAsset）带 `batchId`，在哪个批次拍摄 / 编目就归入哪个批次，不随后续参数调整迁移。
+- **地图 / 航点表 / 成果编目切批次后显示同一组数据**：三页共用同一个批次切换器（`BatchSwitcher`），选中某批次后，地图、航点表、成果编目都只展示该批次的数据；冻结批次为只读快照。
+- **保存失败恢复草稿并重试**：保存批次用 Dexie 事务（`rw`），失败时整体回滚（不会只写一半），并保留失败草稿，页面顶部「重试保存」可恢复重试。
+- **旧数据回填为初始批**：v2 → v3 升级时，为每个没有批次的任务创建「初始批」，并把既有航点 / 成果回填到该批。
+- **过期标签页保留冲突稿，按片号合并不覆盖**：保存前在事务内重读当前活动批次，若发现其他标签页已保存更新的批次，则判定为冲突，**不覆盖先提交内容**，而是保留冲突稿；可「按片号合并」——成果按片号（imageNo）只增不覆，航点按序号只增不覆。
+- **跨标签页同步**：某标签页保存批次后写入同步信号，其他标签页监听后自动重载批次。
+
 ## 数据存储说明
 
-- 数据库名 `gbdronemap`，当前结构版本 **v2**（`localStorage['gbdronemap:db-version']` 记录）。
-- 六张表：`missions`（任务）、`waypoints`（航点）、`lines`（航线参数）、`assets`（成果影像条目）、`thumbs`（**缩略图单独建表**，dataUrl）、`presets`（相机预设）。
-- v1 → v2 迁移：为老任务补 `areaPolygon`/传感器默认值，为航线补 `updatedAt`/`batteryCount`，并新增索引。
+- 数据库名 `gbdronemap`，当前结构版本 **v3**（`localStorage['gbdronemap:db-version']` 记录）。
+- 七张表：`missions`（任务）、`waypoints`（航点，带 `batchId`）、`lines`（旧航线参数，v3 起不再写入）、`batches`（**航线批次**）、`assets`（成果影像条目，带 `batchId`）、`thumbs`（**缩略图单独建表**，dataUrl）、`presets`（相机预设）。
+- v2 → v3 迁移：新增 `batches` 表与 `waypoints.batchId` / `assets.batchId` 索引；为每个没有批次的任务回填「初始批」，并把既有航点 / 成果归入该批。
 - 容器无状态、不挂载命名卷；清空站点数据即回到初始示范数据。
-- 首次打开灌入 2 个示范任务、5 个航点、2 条航线参数、6 条成果影像条目（含缩略图）与 3 套相机预设。
+- 首次打开灌入 2 个示范任务、5 个航点、6 条成果影像条目（含缩略图）与 3 套相机预设（批次由回填逻辑补齐）。

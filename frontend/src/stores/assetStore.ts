@@ -13,6 +13,7 @@ interface AssetState {
   markMany: (ids: string[], quality: ImageQuality) => Promise<void>;
   removeMany: (ids: string[]) => Promise<void>;
   byMission: (missionId: string) => ImageAsset[];
+  byBatch: (missionId: string, batchId: string) => ImageAsset[];
   qualityStats: (missionId: string) => { quality: ImageQuality; count: number }[];
 }
 
@@ -68,6 +69,9 @@ export const useAssetStore = create<AssetState>((set, get) => ({
   },
   byMission(missionId) {
     return get().items.filter((it) => it.missionId === missionId);
+  },
+  byBatch(missionId, batchId) {
+    return get().items.filter((it) => it.missionId === missionId && it.batchId === batchId);
   },
   qualityStats(missionId) {
     const list = get().items.filter((it) => it.missionId === missionId);

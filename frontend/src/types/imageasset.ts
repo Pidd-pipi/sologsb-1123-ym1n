@@ -7,6 +7,8 @@ export const IMAGE_QUALITIES: ImageQuality[] = ['合格', '模糊', '过曝'];
 export interface ImageAsset {
   id: string;
   missionId: string;
+  /** 拍摄时所属航线批次（已拍成果跟随拍摄时批次，不随后续参数调整迁移） */
+  batchId: string;
   /** 影像片号 */
   imageNo: string;
   lng: number;

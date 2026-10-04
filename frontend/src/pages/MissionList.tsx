@@ -224,6 +224,7 @@ export default function MissionList() {
                 mission={row.mission}
                 waypointCount={row.waypointCount}
                 assetCount={row.assetCount}
+                batchCount={row.batchCount}
                 lineCount={row.waypointCount > 1 ? 1 : 0}
                 footer={
                   <Space wrap size={4}>

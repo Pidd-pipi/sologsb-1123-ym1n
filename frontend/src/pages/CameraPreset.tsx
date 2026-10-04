@@ -17,8 +17,10 @@ import {
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
+import { useRouteBatchStore } from '../stores/routeBatchStore';
 import OverlapCalcPanel from '../components/common/OverlapCalcPanel';
 import { useRouteMetrics, DEFAULT_ROUTE_PARAMS, type RouteParams } from '../hooks/useRouteMetrics';
+import { useMissionBatches } from '../hooks/useMissionBatches';
 import type { CameraPreset as CameraPresetModel } from '../types/mission';
 
 type Columns = NonNullable<TableProps<CameraPresetModel>['columns']>;
@@ -30,6 +32,7 @@ export default function CameraPreset() {
   const addPreset = useMissionStore((s) => s.addPreset);
   const removePreset = useMissionStore((s) => s.removePreset);
   const applyPreset = useMissionStore((s) => s.applyPreset);
+  const markStale = useRouteBatchStore((s) => s.markStale);
 
   const [missionId, setMissionId] = useState('');
   const [presetId, setPresetId] = useState('');
@@ -44,6 +47,7 @@ export default function CameraPreset() {
   });
   const [error, setError] = useState('');
   const [toast, setToast] = useState('');
+  const { activeBatch } = useMissionBatches(missionId);
 
   useEffect(() => {
     if (!toast) return;
@@ -56,7 +60,7 @@ export default function CameraPreset() {
     if (!presetId && presets.length > 0) setPresetId(presets[0].id);
   }, [missions, presets, missionId, presetId]);
 
-  const metrics = useRouteMetrics(missionId, params);
+  const metrics = useRouteMetrics(missionId, activeBatch?.id, params);
   const selectedMission = missions.find((m) => m.id === missionId);
 
   const columns: Columns = [
@@ -87,7 +91,8 @@ export default function CameraPreset() {
             disabled={!missionId}
             onClick={async () => {
               await applyPreset(missionId, row.id);
-              setToast(`已把预设「${row.name}」带入 ${selectedMission?.missionNo ?? ''}`);
+              await markStale(missionId);
+              setToast(`已把预设「${row.name}」带入 ${selectedMission?.missionNo ?? ''}，预计张数需重算保存`);
             }}
           >
             带入任务
@@ -197,8 +202,9 @@ export default function CameraPreset() {
                 disabled={!missionId || !presetId}
                 onClick={async () => {
                   await applyPreset(missionId, presetId);
+                  await markStale(missionId);
                   const preset = presets.find((p) => p.id === presetId);
-                  setToast(`已把「${preset?.name ?? ''}」的焦距/像元/传感器带入任务`);
+                  setToast(`已把「${preset?.name ?? ''}」的焦距/像元/传感器带入任务，预计张数需重算保存`);
                 }}
               >
                 带入任务

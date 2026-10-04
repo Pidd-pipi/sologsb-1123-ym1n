@@ -13,8 +13,10 @@ interface WaypointState {
   move: (id: string, direction: 'up' | 'down') => Promise<void>;
   reorder: (fromId: string, toId: string) => Promise<void>;
   removeByMission: (missionId: string) => Promise<void>;
+  removeByBatch: (missionId: string, batchId: string) => Promise<void>;
   remove: (id: string) => Promise<void>;
   byMission: (missionId: string) => Waypoint[];
+  byBatch: (missionId: string, batchId: string) => Waypoint[];
 }
 
 export const useWaypointStore = create<WaypointState>((set, get) => ({
@@ -41,9 +43,11 @@ export const useWaypointStore = create<WaypointState>((set, get) => ({
     await db.waypoints.update(id, patch);
     set({ items: get().items.map((it) => (it.id === id ? { ...it, ...patch } : it)) });
   },
-  /** 与相邻航点交换序号 */
+  /** 与相邻航点交换序号（同批次内） */
   async move(id, direction) {
-    const list = get().byMission(get().items.find((it) => it.id === id)?.missionId ?? '');
+    const wp = get().items.find((it) => it.id === id);
+    if (!wp) return;
+    const list = get().byBatch(wp.missionId, wp.batchId);
     const index = list.findIndex((it) => it.id === id);
     const target = direction === 'up' ? list[index - 1] : list[index + 1];
     if (!target) return;
@@ -69,6 +73,13 @@ export const useWaypointStore = create<WaypointState>((set, get) => ({
     await db.waypoints.bulkDelete(ids);
     set({ items: get().items.filter((it) => it.missionId !== missionId) });
   },
+  async removeByBatch(missionId, batchId) {
+    const ids = get()
+      .items.filter((it) => it.missionId === missionId && it.batchId === batchId)
+      .map((it) => it.id);
+    await db.waypoints.bulkDelete(ids);
+    set({ items: get().items.filter((it) => !(it.missionId === missionId && it.batchId === batchId)) });
+  },
   async remove(id) {
     await db.waypoints.delete(id);
     set({ items: get().items.filter((it) => it.id !== id) });
@@ -76,6 +87,11 @@ export const useWaypointStore = create<WaypointState>((set, get) => ({
   byMission(missionId) {
     return get()
       .items.filter((it) => it.missionId === missionId)
+      .sort((a, b) => a.seq - b.seq);
+  },
+  byBatch(missionId, batchId) {
+    return get()
+      .items.filter((it) => it.missionId === missionId && it.batchId === batchId)
       .sort((a, b) => a.seq - b.seq);
   },
 }));

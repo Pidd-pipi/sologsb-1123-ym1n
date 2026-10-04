@@ -57,15 +57,20 @@ export interface RouteMetrics {
 /**
  * 由航高、焦距、像元尺寸算 GSD、航线间距、预计张数与耗时。
  * 被航线规划页（/missions/:id/route）与航点明细页（/missions/:id/waypoints）消费。
+ * 航点按批次（batchId）过滤：地图 / 航点表 / 成果编目切批次后展示同一组数据。
  */
-export function useRouteMetrics(missionId: string | undefined, params: RouteParams = DEFAULT_ROUTE_PARAMS): RouteMetrics {
+export function useRouteMetrics(
+  missionId: string | undefined,
+  batchId: string | undefined,
+  params: RouteParams = DEFAULT_ROUTE_PARAMS,
+): RouteMetrics {
   const missions = useMissionStore((s) => s.items);
   const allWaypoints = useWaypointStore((s) => s.items);
 
   return useMemo<RouteMetrics>(() => {
     const mission = missions.find((m) => m.id === missionId);
     const points: LngLat[] = allWaypoints
-      .filter((w) => w.missionId === missionId)
+      .filter((w) => w.missionId === missionId && (batchId ? w.batchId === batchId : true))
       .sort((a, b) => a.seq - b.seq)
       .map((w) => [w.lng, w.lat] as LngLat);
 
@@ -111,5 +116,5 @@ export function useRouteMetrics(missionId: string | undefined, params: RoutePara
         durationMin: Math.round((estDuration / sortieCount) * 10) / 10,
       })),
     };
-  }, [missions, allWaypoints, missionId, params]);
+  }, [missions, allWaypoints, missionId, batchId, params]);
 }

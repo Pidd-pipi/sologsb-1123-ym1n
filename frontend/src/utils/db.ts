@@ -2,17 +2,19 @@ import Dexie, { type Table } from 'dexie';
 import type { CameraPreset, Mission } from '../types/mission';
 import type { Waypoint } from '../types/waypoint';
 import type { FlightLine } from '../types/flightline';
+import type { RouteBatch } from '../types/routeBatch';
 import { makeThumbDataUrl, type AssetThumb, type ImageAsset } from '../types/imageasset';
 import { newId } from './id';
 
 export const DB_NAME = 'gbdronemap';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbdronemap:db-version';
 
 class DroneMapDB extends Dexie {
   missions!: Table<Mission, string>;
   waypoints!: Table<Waypoint, string>;
   lines!: Table<FlightLine, string>;
+  batches!: Table<RouteBatch, string>;
   assets!: Table<ImageAsset, string>;
   thumbs!: Table<AssetThumb, string>;
   presets!: Table<CameraPreset, string>;
@@ -55,6 +57,30 @@ class DroneMapDB extends Dexie {
             if (row.batteryCount === undefined) row.batteryCount = 1;
           });
       });
+    this.version(3)
+      .stores({
+        missions: 'id, missionNo, areaName, droneModel, flightDate, status, purpose, createdAt',
+        waypoints: 'id, missionId, batchId, seq, action, altitude',
+        lines: 'id, missionId, lineNo, updatedAt',
+        batches: 'id, missionId, batchNo, status, createdAt',
+        assets: 'id, missionId, batchId, imageNo, quality, shotAt',
+        thumbs: 'id, missionId',
+        presets: 'id, name, cameraModel',
+      })
+      .upgrade(async (tx) => {
+        // 回填：为没有批次的任务创建「初始批」，并把既有航点 / 成果归入该批
+        const missions = await tx.table('missions').toArray();
+        for (const mission of missions) {
+          const exists = await tx.table('batches').where('missionId').equals(mission.id).count();
+          if (exists > 0) continue;
+          const line = await tx.table('lines').where('missionId').equals(mission.id).first();
+          const wps = await tx.table('waypoints').where('missionId').equals(mission.id).toArray();
+          const batch = buildInitialBatch(mission, line, wps);
+          await tx.table('batches').add(batch);
+          await tx.table('waypoints').where('missionId').equals(mission.id).modify({ batchId: batch.id });
+          await tx.table('assets').where('missionId').equals(mission.id).modify({ batchId: batch.id });
+        }
+      });
   }
 }
 
@@ -77,23 +103,71 @@ export function readDbVersion(): number {
   }
 }
 
-/** 读取某任务的航线参数（每任务一条） */
-export async function loadFlightLine(missionId: string): Promise<FlightLine | undefined> {
-  const rows = await db.lines.where('missionId').equals(missionId).toArray();
-  return rows.sort((a, b) => a.lineNo - b.lineNo)[0];
+/** 由任务 + 既有航线参数 + 航点构造「初始批」（旧数据回填 / 新任务首次建批共用） */
+export function buildInitialBatch(
+  mission: Mission,
+  line?: FlightLine,
+  waypoints: Waypoint[] = [],
+): RouteBatch {
+  const now = Date.now();
+  const first = waypoints[0];
+  return {
+    id: newId('batch'),
+    missionId: mission.id,
+    batchNo: 1,
+    label: '初始批',
+    status: 'active',
+    altitude: first?.altitude ?? 120,
+    speed: first?.speed ?? 8,
+    overlapForward: line?.overlapForward ?? 75,
+    overlapSide: line?.overlapSide ?? 70,
+    heading: line?.heading ?? 90,
+    cameraModel: mission.cameraModel,
+    sensorWidth: mission.sensorWidth,
+    sensorHeight: mission.sensorHeight,
+    focalLength: mission.focalLength,
+    pixelSize: mission.pixelSize,
+    areaPolygon: mission.areaPolygon,
+    estPhotos: line?.estPhotos ?? 0,
+    estDuration: line?.estDuration ?? 0,
+    gsd: line?.gsd ?? 0,
+    spacing: line?.spacing ?? 0,
+    photoInterval: line?.photoInterval ?? 0,
+    batteryCount: line?.batteryCount ?? 1,
+    createdAt: now,
+    frozenAt: null,
+    stale: false,
+  };
 }
 
-/** 保存 / 更新航线参数 */
-export async function saveFlightLine(line: FlightLine): Promise<void> {
-  await db.lines.put(line);
+/**
+ * 回填批次（幂等）：为没有批次的任务创建「初始批」，并把缺 batchId 的航点 / 成果归入该批。
+ * v3 升级时已在事务内执行过；此处用于首次灌入示范数据后的补齐。
+ */
+export async function backfillBatches(): Promise<void> {
+  const missions = await db.missions.toArray();
+  for (const mission of missions) {
+    const exists = await db.batches.where('missionId').equals(mission.id).count();
+    if (exists > 0) continue;
+    const line = await db.lines.where('missionId').equals(mission.id).first();
+    const wps = await db.waypoints.where('missionId').equals(mission.id).toArray();
+    const batch = buildInitialBatch(mission, line, wps);
+    await db.batches.add(batch);
+    await db.waypoints.where('missionId').equals(mission.id).modify({ batchId: batch.id });
+    await db.assets.where('missionId').equals(mission.id).modify({ batchId: batch.id });
+  }
 }
 
 /** 按航线参数把任务拆分为多架次（每架次按电池组数分组） */
-export function splitSorties(line: FlightLine): { sortie: number; photos: number; durationMin: number }[] {
+export function splitSorties(metrics: { estPhotos: number; estDuration: number }): {
+  sortie: number;
+  photos: number;
+  durationMin: number;
+}[] {
   const perSortie = 20; // 每组电池有效续航 20 min
-  const count = Math.max(1, Math.ceil(line.estDuration / perSortie));
-  const photosPer = Math.ceil(line.estPhotos / count);
-  const durationPer = Math.round((line.estDuration / count) * 10) / 10;
+  const count = Math.max(1, Math.ceil(metrics.estDuration / perSortie));
+  const photosPer = Math.ceil(metrics.estPhotos / count);
+  const durationPer = Math.round((metrics.estDuration / count) * 10) / 10;
   return Array.from({ length: count }, (_, i) => ({
     sortie: i + 1,
     photos: photosPer,
@@ -101,7 +175,7 @@ export function splitSorties(line: FlightLine): { sortie: number; photos: number
   }));
 }
 
-/** 首次进入灌入示范任务、航点、航线参数与成果影像条目 */
+/** 首次进入灌入示范任务、航点与成果影像条目（批次由 backfillBatches 补齐） */
 export async function ensureSeedData(): Promise<void> {
   const count = await db.missions.count();
   if (count > 0) return;
@@ -175,6 +249,7 @@ export async function ensureSeedData(): Promise<void> {
     waypoints.push({
       id: newId('wp'),
       missionId: missionA,
+      batchId: '', // 由 backfillBatches 回填
       seq: index + 1,
       lng,
       lat,
@@ -189,6 +264,7 @@ export async function ensureSeedData(): Promise<void> {
   waypoints.push({
     id: newId('wp'),
     missionId: missionB,
+    batchId: '',
     seq: 1,
     lng: 121.4726,
     lat: 31.2321,
@@ -200,39 +276,6 @@ export async function ensureSeedData(): Promise<void> {
     hoverSec: 0,
   });
 
-  const lines: FlightLine[] = [
-    {
-      id: newId('line'),
-      missionId: missionA,
-      lineNo: 1,
-      spacing: 62.5,
-      photoInterval: 24.8,
-      overlapForward: 75,
-      overlapSide: 70,
-      gsd: 3.22,
-      estPhotos: 12,
-      estDuration: 3.6,
-      batteryCount: 1,
-      heading: 90,
-      updatedAt: now - 30 * day,
-    },
-    {
-      id: newId('line'),
-      missionId: missionB,
-      lineNo: 1,
-      spacing: 92.3,
-      photoInterval: 42.1,
-      overlapForward: 70,
-      overlapSide: 65,
-      gsd: 1.89,
-      estPhotos: 9,
-      estDuration: 4.2,
-      batteryCount: 1,
-      heading: 45,
-      updatedAt: now - 8 * day,
-    },
-  ];
-
   const assets: ImageAsset[] = [];
   const thumbs: AssetThumb[] = [];
   const qualities: ImageAsset['quality'][] = ['合格', '合格', '模糊', '合格', '过曝', '合格'];
@@ -243,6 +286,7 @@ export async function ensureSeedData(): Promise<void> {
     assets.push({
       id,
       missionId: missionA,
+      batchId: '', // 由 backfillBatches 回填
       imageNo: `IMG_${String(1001 + index)}`,
       lng,
       lat,
@@ -287,13 +331,15 @@ export async function ensureSeedData(): Promise<void> {
     },
   ];
 
-  // 六张表超过 Dexie 位置参数上限，改用数组形式声明事务范围
-  await db.transaction('rw', [db.missions, db.waypoints, db.lines, db.assets, db.thumbs, db.presets], async () => {
+  // 五张表超过 Dexie 位置参数上限，改用数组形式声明事务范围
+  await db.transaction('rw', [db.missions, db.waypoints, db.assets, db.thumbs, db.presets], async () => {
     await db.missions.bulkPut(missions);
     await db.waypoints.bulkPut(waypoints);
-    await db.lines.bulkPut(lines);
     await db.assets.bulkPut(assets);
     await db.thumbs.bulkPut(thumbs);
     await db.presets.bulkPut(presets);
   });
+
+  // 补齐初始批（为示范任务创建「初始批」并回填 batchId）
+  await backfillBatches();
 }

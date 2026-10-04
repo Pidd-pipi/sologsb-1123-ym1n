@@ -22,13 +22,16 @@ import { ImportOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
 import { useRouteMetrics, DEFAULT_ROUTE_PARAMS } from '../hooks/useRouteMetrics';
+import { useMissionBatches } from '../hooks/useMissionBatches';
 import AmapRouteView from '../components/common/AmapRouteView';
+import BatchSwitcher from '../components/common/BatchSwitcher';
+import BatchBanners from '../components/common/BatchBanners';
 import { WAYPOINT_ACTIONS, parseWaypointText, type Waypoint, type WaypointAction } from '../types/waypoint';
 import { calcGsd, groundCoverage } from '../utils/geoCalc';
 
 type Columns = NonNullable<TableProps<Waypoint>['columns']>;
 
-/** /missions/:id/waypoints 航点明细：经纬度粘贴导入、批量改高度、顺序拖拽、单点视场预览 */
+/** /missions/:id/waypoints 航点明细：按批次展示，冻结批次为只读快照 */
 export default function WaypointTable() {
   const { id = '' } = useParams();
   const missions = useMissionStore((s) => s.items);
@@ -38,12 +41,19 @@ export default function WaypointTable() {
   const move = useWaypointStore((s) => s.move);
   const reorder = useWaypointStore((s) => s.reorder);
   const remove = useWaypointStore((s) => s.remove);
-  const clearMission = useWaypointStore((s) => s.removeByMission);
+  const clearBatch = useWaypointStore((s) => s.removeByBatch);
 
   const mission = missions.find((m) => m.id === id);
+  const { activeBatch, selectedBatch, isSelectedActive } = useMissionBatches(id);
+
   const rows = useMemo(
-    () => waypoints.filter((w) => w.missionId === id).sort((a, b) => a.seq - b.seq),
-    [waypoints, id],
+    () =>
+      selectedBatch
+        ? waypoints
+            .filter((w) => w.missionId === id && w.batchId === selectedBatch.id)
+            .sort((a, b) => a.seq - b.seq)
+        : [],
+    [waypoints, id, selectedBatch?.id],
   );
 
   const [pasteText, setPasteText] = useState('');
@@ -59,9 +69,10 @@ export default function WaypointTable() {
   }, [toast]);
 
   const preview = rows.find((w) => w.id === previewId) ?? rows[0];
-  const metrics = useRouteMetrics(id, { ...DEFAULT_ROUTE_PARAMS, altitude: preview?.altitude ?? 120 });
+  const metrics = useRouteMetrics(id, selectedBatch?.id, { ...DEFAULT_ROUTE_PARAMS, altitude: preview?.altitude ?? 120 });
 
   const importPaste = async () => {
+    if (!activeBatch || !isSelectedActive) return;
     const parsed = parseWaypointText(pasteText);
     if (parsed.length === 0) {
       setError('未解析到有效经纬度：每行应为「经度,纬度[,航高]」');
@@ -71,6 +82,7 @@ export default function WaypointTable() {
     await addMany(
       parsed.map((p, index) => ({
         missionId: id,
+        batchId: activeBatch.id,
         seq: startSeq + index,
         lng: Number(p.lng.toFixed(6)),
         lat: Number(p.lat.toFixed(6)),
@@ -88,6 +100,7 @@ export default function WaypointTable() {
   };
 
   const applyBatchAltitude = async () => {
+    if (!isSelectedActive) return;
     for (const w of rows) {
       await update(w.id, { altitude: batchAltitude });
     }
@@ -102,28 +115,57 @@ export default function WaypointTable() {
       title: '相对航高 m',
       width: 140,
       render: (_: unknown, row: Waypoint) => (
-        <InputNumber size="small" min={20} max={600} value={row.altitude} onChange={(v) => update(row.id, { altitude: Number(v ?? 0) })} />
+        <InputNumber
+          size="small"
+          min={20}
+          max={600}
+          value={row.altitude}
+          disabled={!isSelectedActive}
+          onChange={(v) => update(row.id, { altitude: Number(v ?? 0) })}
+        />
       ),
     },
     {
       title: '航速 m/s',
       width: 120,
       render: (_: unknown, row: Waypoint) => (
-        <InputNumber size="small" min={1} max={25} step={0.5} value={row.speed} onChange={(v) => update(row.id, { speed: Number(v ?? 0) })} />
+        <InputNumber
+          size="small"
+          min={1}
+          max={25}
+          step={0.5}
+          value={row.speed}
+          disabled={!isSelectedActive}
+          onChange={(v) => update(row.id, { speed: Number(v ?? 0) })}
+        />
       ),
     },
     {
       title: '航向 °',
       width: 120,
       render: (_: unknown, row: Waypoint) => (
-        <InputNumber size="small" min={0} max={360} value={row.heading} onChange={(v) => update(row.id, { heading: Number(v ?? 0) })} />
+        <InputNumber
+          size="small"
+          min={0}
+          max={360}
+          value={row.heading}
+          disabled={!isSelectedActive}
+          onChange={(v) => update(row.id, { heading: Number(v ?? 0) })}
+        />
       ),
     },
     {
       title: '云台俯仰 °',
       width: 130,
       render: (_: unknown, row: Waypoint) => (
-        <InputNumber size="small" min={-90} max={30} value={row.gimbalPitch} onChange={(v) => update(row.id, { gimbalPitch: Number(v ?? 0) })} />
+        <InputNumber
+          size="small"
+          min={-90}
+          max={30}
+          value={row.gimbalPitch}
+          disabled={!isSelectedActive}
+          onChange={(v) => update(row.id, { gimbalPitch: Number(v ?? 0) })}
+        />
       ),
     },
     {
@@ -134,6 +176,7 @@ export default function WaypointTable() {
           size="small"
           style={{ width: 100 }}
           value={row.action}
+          disabled={!isSelectedActive}
           onChange={(v) => update(row.id, { action: v as WaypointAction })}
           options={WAYPOINT_ACTIONS.map((a) => ({ value: a, label: a }))}
         />
@@ -143,7 +186,14 @@ export default function WaypointTable() {
       title: '悬停 s',
       width: 110,
       render: (_: unknown, row: Waypoint) => (
-        <InputNumber size="small" min={0} max={300} value={row.hoverSec} onChange={(v) => update(row.id, { hoverSec: Number(v ?? 0) })} />
+        <InputNumber
+          size="small"
+          min={0}
+          max={300}
+          value={row.hoverSec}
+          disabled={!isSelectedActive}
+          onChange={(v) => update(row.id, { hoverSec: Number(v ?? 0) })}
+        />
       ),
     },
     {
@@ -169,16 +219,20 @@ export default function WaypointTable() {
       width: 210,
       render: (_: unknown, row: Waypoint, index: number) => (
         <Space size={4}>
-          <Button size="small" disabled={index === 0} onClick={() => move(row.id, 'up')}>
+          <Button size="small" disabled={!isSelectedActive || index === 0} onClick={() => move(row.id, 'up')}>
             上移
           </Button>
-          <Button size="small" disabled={index === rows.length - 1} onClick={() => move(row.id, 'down')}>
+          <Button
+            size="small"
+            disabled={!isSelectedActive || index === rows.length - 1}
+            onClick={() => move(row.id, 'down')}
+          >
             下移
           </Button>
           <span
-            draggable
+            draggable={isSelectedActive}
             title="拖拽到目标行可交换顺序"
-            style={{ cursor: 'grab', color: '#97a0ad' }}
+            style={{ cursor: isSelectedActive ? 'grab' : 'not-allowed', color: '#97a0ad' }}
             onDragStart={() => setPreviewId(row.id)}
             onDragOver={(e) => e.preventDefault()}
             onDrop={() => reorder(row.id, previewId)}
@@ -196,7 +250,7 @@ export default function WaypointTable() {
           <Button size="small" onClick={() => setPreviewId(row.id)}>
             预览视场
           </Button>
-          <Button size="small" danger onClick={() => remove(row.id)}>
+          <Button size="small" danger disabled={!isSelectedActive} onClick={() => remove(row.id)}>
             删除
           </Button>
         </Space>
@@ -221,6 +275,8 @@ export default function WaypointTable() {
         </Typography.Title>
         <Tag color="green">航点 {rows.length} 个</Tag>
         <Tag>传感器 {mission.sensorWidth}×{mission.sensorHeight} mm / f{mission.focalLength} mm</Tag>
+        <BatchSwitcher missionId={mission.id} />
+        {!isSelectedActive ? <Tag color="default">只读快照（已冻结）</Tag> : null}
         <div style={{ flex: 1 }} />
         <Button type="link">
           <Link to={`/missions/${mission.id}/route`}>航线规划</Link>
@@ -228,11 +284,17 @@ export default function WaypointTable() {
         <Button type="link">
           <Link to={`/missions/${mission.id}/assets`}>成果编目</Link>
         </Button>
-        <Button danger size="small" onClick={() => clearMission(mission.id)}>
-          清空本任务航点
+        <Button
+          danger
+          size="small"
+          disabled={!isSelectedActive || !selectedBatch}
+          onClick={() => selectedBatch && clearBatch(mission.id, selectedBatch.id)}
+        >
+          清空本批次航点
         </Button>
       </Space>
 
+      <BatchBanners missionId={mission.id} />
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
 
@@ -243,10 +305,16 @@ export default function WaypointTable() {
               rows={6}
               placeholder={'每行一个点，例如：\n116.391200,39.907500\n116.393000,39.906800,150'}
               value={pasteText}
+              disabled={!isSelectedActive}
               onChange={(e) => setPasteText(e.target.value)}
             />
             <Space style={{ marginTop: 8 }}>
-              <Button type="primary" icon={<ImportOutlined />} onClick={importPaste}>
+              <Button
+                type="primary"
+                icon={<ImportOutlined />}
+                disabled={!isSelectedActive}
+                onClick={importPaste}
+              >
                 导入航点
               </Button>
               <Button onClick={() => setPasteText('')}>清空文本</Button>
@@ -254,9 +322,20 @@ export default function WaypointTable() {
           </Card>
           <Card size="small" title="批量修改高度" style={{ marginTop: 12 }}>
             <Space>
-              <InputNumber min={20} max={600} step={5} value={batchAltitude} onChange={(v) => setBatchAltitude(Number(v ?? 0))} />
+              <InputNumber
+                min={20}
+                max={600}
+                step={5}
+                value={batchAltitude}
+                disabled={!isSelectedActive}
+                onChange={(v) => setBatchAltitude(Number(v ?? 0))}
+              />
               <span>m</span>
-              <Button icon={<ThunderboltOutlined />} onClick={applyBatchAltitude} disabled={rows.length === 0}>
+              <Button
+                icon={<ThunderboltOutlined />}
+                disabled={!isSelectedActive || rows.length === 0}
+                onClick={applyBatchAltitude}
+              >
                 应用到全部航点
               </Button>
             </Space>

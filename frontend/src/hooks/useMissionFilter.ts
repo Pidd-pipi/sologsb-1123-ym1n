@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
 import { useAssetStore } from '../stores/assetStore';
+import { useRouteBatchStore } from '../stores/routeBatchStore';
 import type { Mission, MissionStatus } from '../types/mission';
 
 export interface MissionFilters {
@@ -28,6 +29,7 @@ export interface MissionRow {
   mission: Mission;
   waypointCount: number;
   assetCount: number;
+  batchCount: number;
 }
 
 /**
@@ -39,6 +41,7 @@ export function useMissionFilter(initial?: Partial<MissionFilters>) {
   const loaded = useMissionStore((s) => s.loaded);
   const waypoints = useWaypointStore((s) => s.items);
   const assets = useAssetStore((s) => s.items);
+  const batches = useRouteBatchStore((s) => s.batches);
 
   const [filters, setFilters] = useState<MissionFilters>({ ...DEFAULT_MISSION_FILTERS, ...initial });
 
@@ -73,6 +76,7 @@ export function useMissionFilter(initial?: Partial<MissionFilters>) {
         mission,
         waypointCount: waypoints.filter((w) => w.missionId === mission.id).length,
         assetCount: assets.filter((a) => a.missionId === mission.id).length,
+        batchCount: batches.filter((b) => b.missionId === mission.id).length,
       }));
     const sorted = [...rows];
     sorted.sort((a, b) => {
@@ -81,7 +85,7 @@ export function useMissionFilter(initial?: Partial<MissionFilters>) {
       return b.mission.createdAt - a.mission.createdAt;
     });
     return sorted;
-  }, [missions, waypoints, assets, filters]);
+  }, [missions, waypoints, assets, batches, filters]);
 
   const patch = (p: Partial<MissionFilters>) => setFilters((prev) => ({ ...prev, ...p }));
 

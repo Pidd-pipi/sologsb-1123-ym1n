@@ -5,6 +5,7 @@ import { RocketOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
 import { useAssetStore } from '../stores/assetStore';
+import { useRouteBatchStore, BATCHES_SYNC_KEY } from '../stores/routeBatchStore';
 import { ensureSeedData, markDbVersion, readDbVersion } from '../utils/db';
 import { hasAmapKey } from '../utils/amapLoader';
 import MissionList from '../pages/MissionList';
@@ -87,19 +88,26 @@ export default function AppRouter() {
   const loadMissions = useMissionStore((s) => s.load);
   const loadWaypoints = useWaypointStore((s) => s.load);
   const loadAssets = useAssetStore((s) => s.load);
+  const loadBatches = useRouteBatchStore((s) => s.load);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       await ensureSeedData();
       markDbVersion();
-      await Promise.all([loadMissions(), loadWaypoints(), loadAssets()]);
+      await Promise.all([loadMissions(), loadWaypoints(), loadAssets(), loadBatches()]);
       if (alive) setReady(true);
     })();
+    // 跨标签页同步：其他标签页保存批次后重载
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === BATCHES_SYNC_KEY) void loadBatches();
+    };
+    window.addEventListener('storage', onStorage);
     return () => {
       alive = false;
+      window.removeEventListener('storage', onStorage);
     };
-  }, [loadMissions, loadWaypoints, loadAssets]);
+  }, [loadMissions, loadWaypoints, loadAssets, loadBatches]);
 
   if (!ready) {
     return (
