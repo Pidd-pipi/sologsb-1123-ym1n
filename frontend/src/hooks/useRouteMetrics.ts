@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
-import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
+import { useBatchStore } from '../stores/batchStore';
 import {
   calcGsd,
   estimateBatteries,
@@ -11,28 +11,11 @@ import {
   photoInterval,
   polygonAreaM2,
 } from '../utils/geoCalc';
+import { routeParamsOf, splitSorties } from '../utils/batch';
 import type { LngLat } from '../types/mission';
+import type { RouteBatch } from '../types/batch';
 
-export interface RouteParams {
-  /** 相对航高 m */
-  altitude: number;
-  /** 航速 m/s */
-  speed: number;
-  /** 航向重叠率 % */
-  overlapForward: number;
-  /** 旁向重叠率 % */
-  overlapSide: number;
-  /** 航带方向 ° */
-  heading: number;
-}
-
-export const DEFAULT_ROUTE_PARAMS: RouteParams = {
-  altitude: 120,
-  speed: 8,
-  overlapForward: 75,
-  overlapSide: 70,
-  heading: 90,
-};
+export type RouteParams = ReturnType<typeof routeParamsOf>;
 
 export interface RouteMetrics {
   gsd: number;
@@ -55,42 +38,37 @@ export interface RouteMetrics {
 }
 
 /**
- * 由航高、焦距、像元尺寸算 GSD、航线间距、预计张数与耗时。
- * 被航线规划页（/missions/:id/route）与航点明细页（/missions/:id/waypoints）消费。
+ * 以某批次冻结的测区 / 相机快照 + 该批次航点，结合传入的（可能尚未保存的）参数实时回算。
+ * 被航线规划页（/missions/:id/route）、航点明细页与相机预设页消费。
+ * 切批次后调用方传入不同的 batch，得到的是同一组批次数据。
  */
-export function useRouteMetrics(missionId: string | undefined, params: RouteParams = DEFAULT_ROUTE_PARAMS): RouteMetrics {
-  const missions = useMissionStore((s) => s.items);
+export function useRouteMetrics(batch: RouteBatch | undefined, paramsOverride?: Partial<RouteParams>): RouteMetrics {
   const allWaypoints = useWaypointStore((s) => s.items);
+  const params: RouteParams = batch ? { ...routeParamsOf(batch), ...paramsOverride } : { ...routeParamsOf({ altitude: 120, speed: 8, overlapForward: 75, overlapSide: 70, heading: 90 }), ...paramsOverride };
 
   return useMemo<RouteMetrics>(() => {
-    const mission = missions.find((m) => m.id === missionId);
+    const polygon: LngLat[] = batch?.areaPolygon ?? [];
+    const camera = batch?.camera ?? { cameraModel: '', sensorWidth: 13.2, sensorHeight: 8.8, focalLength: 8.8, pixelSize: 2.4 };
     const points: LngLat[] = allWaypoints
-      .filter((w) => w.missionId === missionId)
+      .filter((w) => w.batchId === batch?.id)
       .sort((a, b) => a.seq - b.seq)
       .map((w) => [w.lng, w.lat] as LngLat);
 
-    const sensorWidth = mission?.sensorWidth ?? 13.2;
-    const sensorHeight = mission?.sensorHeight ?? 8.8;
-    const focalLength = mission?.focalLength ?? 8.8;
-    const pixelSize = mission?.pixelSize ?? 2.4;
-
-    const gsd = calcGsd(pixelSize, params.altitude, focalLength);
-    const spacing = lineSpacing(sensorWidth, params.altitude, focalLength, params.overlapSide);
-    const interval = photoInterval(sensorHeight, params.altitude, focalLength, params.overlapForward);
-    const area = mission ? polygonAreaM2(mission.areaPolygon) : 0;
+    const gsd = calcGsd(camera.pixelSize, params.altitude, camera.focalLength);
+    const spacing = lineSpacing(camera.sensorWidth, params.altitude, camera.focalLength, params.overlapSide);
+    const interval = photoInterval(camera.sensorHeight, params.altitude, camera.focalLength, params.overlapForward);
+    const area = polygonAreaM2(polygon);
     const pathLength = pathLengthMeters(points);
     // 按测区面积与航线间距估算航带数
     const side = area > 0 ? Math.sqrt(area) : 0;
     const lineCount = spacing > 0 && side > 0 ? Math.max(1, Math.ceil(side / spacing)) : 0;
-    const effLineLength = lineCount > 0 ? (area > 0 ? area / (lineCount * Math.max(spacing, 1)) * spacing : 0) : 0;
+    const effLineLength = lineCount > 0 ? (area > 0 ? (area / (lineCount * Math.max(spacing, 1))) * spacing : 0) : 0;
     const estPhotos = estimatePhotos(effLineLength || side, interval, lineCount);
     const hoverSecTotal = allWaypoints
-      .filter((w) => w.missionId === missionId)
-      .reduce((s, w) => s + (w.action === '悬停' ? w.hoverSec : 0), 0);
+      .filter((w) => w.batchId === batch?.id && w.action === '悬停')
+      .reduce((s, w) => s + w.hoverSec, 0);
     const estDuration = estimateDuration(pathLength, params.speed, points.length, hoverSecTotal);
     const batteryCount = estimateBatteries(estDuration);
-    const perSortie = 20;
-    const sortieCount = Math.max(1, Math.ceil(estDuration / perSortie));
 
     return {
       gsd,
@@ -103,13 +81,9 @@ export function useRouteMetrics(missionId: string | undefined, params: RoutePara
       pathLength,
       waypointCount: points.length,
       lineCount,
-      coverageForward: Math.round((sensorHeight * params.altitude) / (focalLength || 1) * 100) / 100,
-      coverageSide: Math.round((sensorWidth * params.altitude) / (focalLength || 1) * 100) / 100,
-      sorties: Array.from({ length: sortieCount }, (_, i) => ({
-        sortie: i + 1,
-        photos: Math.ceil(estPhotos / sortieCount),
-        durationMin: Math.round((estDuration / sortieCount) * 10) / 10,
-      })),
+      coverageForward: Math.round(((camera.sensorHeight * params.altitude) / (camera.focalLength || 1)) * 100) / 100,
+      coverageSide: Math.round(((camera.sensorWidth * params.altitude) / (camera.focalLength || 1)) * 100) / 100,
+      sorties: splitSorties(estPhotos, estDuration),
     };
-  }, [missions, allWaypoints, missionId, params]);
+  }, [batch, allWaypoints, params.altitude, params.speed, params.overlapForward, params.overlapSide, params.heading]);
 }

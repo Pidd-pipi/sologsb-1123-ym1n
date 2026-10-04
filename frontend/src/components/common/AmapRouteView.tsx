@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Space, Tag, Typography } from 'antd';
 import type { LngLat, Mission } from '../../types/mission';
+import type { CameraSnapshot } from '../../types/batch';
 import type { Waypoint } from '../../types/waypoint';
 import { createProjector, distanceMeters, groundCoverage } from '../../utils/geoCalc';
 import { loadAmap, readAmapKey, type AMapNamespace } from '../../utils/amapLoader';
@@ -18,6 +19,10 @@ export interface AmapRouteViewProps {
   highlightSeq?: number;
   /** 航点标注（用于单点视场预览） */
   withFov?: boolean;
+  /** 批次冻结的相机快照；缺省时用任务当前相机参数 */
+  camera?: CameraSnapshot;
+  /** 航点折线 / 视场配色（不同批次可区分） */
+  tint?: string;
 }
 
 const GRID_W = 760;
@@ -35,7 +40,16 @@ export default function AmapRouteView({
   onPickPoint,
   highlightSeq,
   withFov = true,
+  camera,
+  tint = '#e07a2f',
 }: AmapRouteViewProps) {
+  const cam = camera ?? {
+    cameraModel: mission?.cameraModel ?? '',
+    sensorWidth: mission?.sensorWidth ?? 13.2,
+    sensorHeight: mission?.sensorHeight ?? 8.8,
+    focalLength: mission?.focalLength ?? 8.8,
+    pixelSize: mission?.pixelSize ?? 2.4,
+  };
   const [amap, setAmap] = useState<AMapNamespace | null>(null);
   const [mode, setMode] = useState<'loading' | 'amap' | 'grid'>('loading');
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -91,7 +105,7 @@ export default function AmapRouteView({
       overlays.push(
         new amap.Polyline({
           path: waypoints.map((w) => [w.lng, w.lat]),
-          strokeColor: '#e07a2f',
+          strokeColor: tint,
           strokeWeight: 3,
         }),
       );
@@ -104,8 +118,8 @@ export default function AmapRouteView({
         }),
       );
       if (withFov) {
-        const side = groundCoverage(mission.sensorWidth, w.altitude, mission.focalLength);
-        const along = groundCoverage(mission.sensorHeight, w.altitude, mission.focalLength);
+        const side = groundCoverage(cam.sensorWidth, w.altitude, cam.focalLength);
+        const along = groundCoverage(cam.sensorHeight, w.altitude, cam.focalLength);
         const dLat = side / 111320 / 2;
         const dLng = along / (111320 * Math.cos((w.lat * Math.PI) / 180)) / 2;
         overlays.push(
@@ -114,9 +128,9 @@ export default function AmapRouteView({
               [w.lng - dLng, w.lat - dLat],
               [w.lng + dLng, w.lat + dLat],
             ],
-            strokeColor: '#e07a2f',
+            strokeColor: tint,
             strokeWeight: 1,
-            fillColor: '#e07a2f',
+            fillColor: tint,
             fillOpacity: 0.12,
           }),
         );
@@ -132,7 +146,7 @@ export default function AmapRouteView({
       }
       mapRef.current = null;
     };
-  }, [mode, amap, mission, waypoints, withFov]);
+  }, [mode, amap, mission, waypoints, withFov, cam, tint]);
 
   // 本地 SVG 网格视图：等比投影，完全离线
   const projection = useMemo(() => {
@@ -158,10 +172,10 @@ export default function AmapRouteView({
   }, [projection]);
 
   const fovRects = useMemo(() => {
-    if (!withFov || !mission) return [];
+    if (!withFov) return [];
     return waypoints.map((w) => {
-      const sideM = groundCoverage(mission.sensorWidth, w.altitude, mission.focalLength);
-      const alongM = groundCoverage(mission.sensorHeight, w.altitude, mission.focalLength);
+      const sideM = groundCoverage(cam.sensorWidth, w.altitude, cam.focalLength);
+      const alongM = groundCoverage(cam.sensorHeight, w.altitude, cam.focalLength);
       const p = projection.projector.toXY([w.lng, w.lat]);
       return {
         id: w.id,
@@ -172,7 +186,7 @@ export default function AmapRouteView({
         h: sideM * pxPerMeter,
       };
     });
-  }, [withFov, mission, waypoints, projection, pxPerMeter]);
+  }, [withFov, waypoints, projection, pxPerMeter, cam]);
 
   if (mode === 'loading') {
     return (
@@ -235,9 +249,9 @@ export default function AmapRouteView({
             y={r.y}
             width={r.w}
             height={r.h}
-            fill="#e07a2f"
+            fill={tint}
             fillOpacity={r.seq === highlightSeq ? 0.3 : 0.12}
-            stroke="#e07a2f"
+            stroke={tint}
             strokeWidth={r.seq === highlightSeq ? 2 : 1}
           />
         ))}
@@ -250,7 +264,7 @@ export default function AmapRouteView({
           <polyline
             points={linePath.map((p) => `${p.x},${p.y}`).join(' ')}
             fill="none"
-            stroke="#e07a2f"
+            stroke={tint}
             strokeWidth="2.5"
           />
         ) : null}

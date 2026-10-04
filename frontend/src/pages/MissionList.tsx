@@ -225,6 +225,8 @@ export default function MissionList() {
                 waypointCount={row.waypointCount}
                 assetCount={row.assetCount}
                 lineCount={row.waypointCount > 1 ? 1 : 0}
+                batchCount={row.batchCount}
+                activeEstPhotos={row.activeEstPhotos}
                 footer={
                   <Space wrap size={4}>
                     <Button size="small" type="link" onClick={() => navigate(`/missions/${row.mission.id}/route`)}>

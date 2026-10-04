@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Alert,
@@ -17,8 +17,10 @@ import {
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
+import { useBatchStore } from '../stores/batchStore';
 import OverlapCalcPanel from '../components/common/OverlapCalcPanel';
-import { useRouteMetrics, DEFAULT_ROUTE_PARAMS, type RouteParams } from '../hooks/useRouteMetrics';
+import { useRouteMetrics } from '../hooks/useRouteMetrics';
+import { routeParamsOf } from '../utils/batch';
 import type { CameraPreset as CameraPresetModel } from '../types/mission';
 
 type Columns = NonNullable<TableProps<CameraPresetModel>['columns']>;
@@ -30,10 +32,11 @@ export default function CameraPreset() {
   const addPreset = useMissionStore((s) => s.addPreset);
   const removePreset = useMissionStore((s) => s.removePreset);
   const applyPreset = useMissionStore((s) => s.applyPreset);
+  const batches = useBatchStore((s) => s.items);
 
   const [missionId, setMissionId] = useState('');
   const [presetId, setPresetId] = useState('');
-  const [params, setParams] = useState<RouteParams>({ ...DEFAULT_ROUTE_PARAMS });
+  const [params, setParams] = useState(() => ({ altitude: 120, speed: 8, overlapForward: 75, overlapSide: 70, heading: 90 }));
   const [draft, setDraft] = useState<Omit<CameraPresetModel, 'id'>>({
     name: '',
     cameraModel: '',
@@ -56,8 +59,15 @@ export default function CameraPreset() {
     if (!presetId && presets.length > 0) setPresetId(presets[0].id);
   }, [missions, presets, missionId, presetId]);
 
-  const metrics = useRouteMetrics(missionId, params);
   const selectedMission = missions.find((m) => m.id === missionId);
+  const activeBatch = useMemo(() => batches.find((b) => b.missionId === missionId && b.active), [batches, missionId]);
+  // 选中任务切换时，预览参数跟随该任务当前批次
+  useEffect(() => {
+    if (activeBatch) setParams(routeParamsOf(activeBatch));
+  }, [activeBatch?.id]);
+  // 相机预览：用选中任务当前批次的冻结相机，叠加编辑中的航线参数
+  const previewBatch = activeBatch ? { ...activeBatch, camera: activeBatch.camera } : undefined;
+  const metrics = useRouteMetrics(previewBatch, params);
 
   const columns: Columns = [
     { title: '预设名', dataIndex: 'name', width: 170 },
@@ -86,8 +96,10 @@ export default function CameraPreset() {
             ghost
             disabled={!missionId}
             onClick={async () => {
-              await applyPreset(missionId, row.id);
-              setToast(`已把预设「${row.name}」带入 ${selectedMission?.missionNo ?? ''}`);
+              const res = await applyPreset(missionId, row.id);
+              if (res.ok) setToast(`已把预设「${row.name}」带入 ${selectedMission?.missionNo ?? ''}：相机改动已进入新批次，旧批次冻结`);
+              else if (res.noop) setToast('该预设相机参数与当前批次一致，未新开批次');
+              else setError(res.error ?? '带入失败，改动已保留为失败草稿');
             }}
           >
             带入任务
@@ -196,9 +208,11 @@ export default function CameraPreset() {
                 type="primary"
                 disabled={!missionId || !presetId}
                 onClick={async () => {
-                  await applyPreset(missionId, presetId);
+                  const res = await applyPreset(missionId, presetId);
                   const preset = presets.find((p) => p.id === presetId);
-                  setToast(`已把「${preset?.name ?? ''}」的焦距/像元/传感器带入任务`);
+                  if (res.ok) setToast(`已把「${preset?.name ?? ''}」带入任务：相机改动已进入新批次，旧批次冻结`);
+                  else if (res.noop) setToast('相机参数与当前批次一致，未新开批次');
+                  else setError(res.error ?? '带入失败，改动已保留为失败草稿');
                 }}
               >
                 带入任务

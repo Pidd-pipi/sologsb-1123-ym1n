@@ -7,6 +7,8 @@ export const IMAGE_QUALITIES: ImageQuality[] = ['合格', '模糊', '过曝'];
 export interface ImageAsset {
   id: string;
   missionId: string;
+  /** 拍摄时所属航线批次（成果跟着拍摄时批次走） */
+  batchId: string;
   /** 影像片号 */
   imageNo: string;
   lng: number;
@@ -32,6 +34,8 @@ export interface AssetThumb {
   /** 与影像条目 id 一一对应 */
   id: string;
   missionId: string;
+  /** 冗余批次 id，便于按批次清理缩略图 */
+  batchId: string;
   dataUrl: string;
 }
 

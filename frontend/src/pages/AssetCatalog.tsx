@@ -1,49 +1,48 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import {
-  Alert,
-  Button,
-  Card,
-  Col,
-  Input,
-  Row,
-  Select,
-  Space,
-  Statistic,
-  Tag,
-  Typography,
-} from 'antd';
+import { Alert, Button, Card, Col, Input, Row, Select, Space, Statistic, Tag, Typography } from 'antd';
 import { DownloadOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
-import { useAssetStore } from '../stores/assetStore';
+import { useAssetStore, nextImageDrafts } from '../stores/assetStore';
+import { useBatchStore } from '../stores/batchStore';
+import { useSelectedBatch } from '../hooks/useSelectedBatch';
 import AssetGrid from '../components/common/AssetGrid';
 import AmapRouteView from '../components/common/AmapRouteView';
-import { IMAGE_QUALITIES, type ImageAsset, type ImageAssetDraft, type ImageQuality } from '../types/imageasset';
+import { BatchSwitcher, DraftBanner } from '../components/common/BatchControls';
+import { IMAGE_QUALITIES, type ImageAsset, type ImageQuality } from '../types/imageasset';
 import { calcGsd, distanceMeters } from '../utils/geoCalc';
 
-/** /missions/:id/assets 成果影像编目：格子列出片号/缩略图/GSD/质量，多选标记、定位到图 */
+/** /missions/:id/assets 成果影像编目：按拍摄时批次查看 / 提交，多选标记、定位到图、冲突合并 */
 export default function AssetCatalog() {
   const { id = '' } = useParams();
   const missions = useMissionStore((s) => s.items);
   const waypoints = useWaypointStore((s) => s.items);
   const assets = useAssetStore((s) => s.items);
   const thumbs = useAssetStore((s) => s.thumbs);
-  const addMany = useAssetStore((s) => s.addMany);
   const markMany = useAssetStore((s) => s.markMany);
   const removeMany = useAssetStore((s) => s.removeMany);
+  const missionBatches = useBatchStore((s) => s.items).filter((b) => b.missionId === id).sort((a, b) => a.batchNo - b.batchNo);
+  const commitAssets = useBatchStore((s) => s.commitAssets);
+  const { batchId, setBatchId } = useSelectedBatch(id);
 
   const mission = missions.find((m) => m.id === id);
-  const missionAssets = useMemo(
-    () => assets.filter((a) => a.missionId === id).sort((a, b) => a.imageNo.localeCompare(b.imageNo, 'zh-Hans-CN', { numeric: true })),
-    [assets, id],
+  const active = missionBatches.find((b) => b.active);
+  const selected = missionBatches.find((b) => b.id === batchId) ?? active;
+
+  const batchAssets = useMemo(
+    () =>
+      assets
+        .filter((a) => a.batchId === selected?.id)
+        .sort((a, b) => a.imageNo.localeCompare(b.imageNo, 'zh-Hans-CN', { numeric: true })),
+    [assets, selected?.id],
   );
-  const missionWaypoints = useMemo(
-    () => waypoints.filter((w) => w.missionId === id).sort((a, b) => a.seq - b.seq),
-    [waypoints, id],
+  const batchWaypoints = useMemo(
+    () => waypoints.filter((w) => w.batchId === selected?.id).sort((a, b) => a.seq - b.seq),
+    [waypoints, selected?.id],
   );
 
-  const [selected, setSelected] = useState<string[]>([]);
+  const [selectedIds, setSelected] = useState<string[]>([]);
   const [keyword, setKeyword] = useState('');
   const [qualityFilter, setQualityFilter] = useState<ImageQuality | 'all'>('all');
   const [locateSeq, setLocateSeq] = useState<number | undefined>(undefined);
@@ -51,12 +50,17 @@ export default function AssetCatalog() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    setSelected([]);
+    setLocateSeq(undefined);
+  }, [selected?.id]);
+
+  useEffect(() => {
     if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 2600);
+    const timer = window.setTimeout(() => setToast(''), 3600);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const filtered = missionAssets.filter((a) => {
+  const filtered = batchAssets.filter((a) => {
     if (qualityFilter !== 'all' && a.quality !== qualityFilter) return false;
     if (keyword && !a.imageNo.toLowerCase().includes(keyword.trim().toLowerCase())) return false;
     return true;
@@ -64,41 +68,49 @@ export default function AssetCatalog() {
 
   const stats = IMAGE_QUALITIES.map((quality) => ({
     quality,
-    count: missionAssets.filter((a) => a.quality === quality).length,
+    count: batchAssets.filter((a) => a.quality === quality).length,
   }));
 
-  /** 批量编目：按航点位置与当前航线 GSD 生成影像条目 */
+  /** 批量编目：按「拍摄时批次」的航点与冻结相机参数生成影像条目并提交（带乐观锁） */
   const catalogFromWaypoints = async () => {
-    if (!mission) return;
-    if (missionWaypoints.length === 0) {
-      setError('该任务暂无航点，请先到「航点明细」录入或点击网格新增');
+    if (!mission || !selected) return;
+    if (batchWaypoints.length === 0) {
+      setError(`${selected.label} 暂无航点，请先到「航点明细」录入或点击网格新增`);
       return;
     }
-    const gsd = calcGsd(mission.pixelSize, missionWaypoints[0].altitude, mission.focalLength);
-    const startNo = missionAssets.length + 1;
-    const drafts: ImageAssetDraft[] = missionWaypoints.map((w, index) => ({
+    const gsd = calcGsd(selected.camera.pixelSize, selected.altitude, selected.camera.focalLength);
+    const drafts = nextImageDrafts({
+      missionNo: mission.missionNo,
       missionId: mission.id,
-      imageNo: `IMG_${String(2000 + startNo + index)}`,
-      lng: w.lng,
-      lat: w.lat,
-      altitude: w.altitude,
-      gsd: calcGsd(mission.pixelSize, w.altitude, mission.focalLength) || gsd,
-      overlap: 75,
-      tiltAngle: Math.abs(w.gimbalPitch + 90),
-      shotAt: Date.now() + index * 1000,
-      quality: '合格' as ImageQuality,
-      folder: `/${mission.missionNo}/100MEDIA`,
-    }));
-    await addMany(drafts);
-    setError('');
-    setToast(`已按 ${drafts.length} 个航点批量编目影像条目（GSD ${gsd} cm/px）`);
+      batchId: selected.id,
+      baseTime: Date.now(),
+      waypoints: batchWaypoints,
+      pixelSize: selected.camera.pixelSize,
+      focalLength: selected.camera.focalLength,
+      existingNos: batchAssets.map((a) => a.imageNo),
+      gsd,
+    });
+    const res = await commitAssets({ missionId: mission.id, batchId: selected.id, baseRevision: selected.revision, drafts });
+    if (res.kind === 'ok') {
+      const added = res.merge?.added.length ?? 0;
+      const skipped = res.merge?.skipped ?? [];
+      setError('');
+      setToast(
+        `已把 ${added} 张成果提交到 ${selected.label}（GSD ${gsd} cm/px）` +
+          (skipped.length > 0 ? `；片号已存在保留原数据：${skipped.join('、')}` : ''),
+      );
+    } else if (res.kind === 'conflict') {
+      setError('本标签页已过期：冲突稿已保留（见顶部），可按片号合并，不会覆盖先提交内容');
+    } else {
+      setError(res.error ?? '提交失败：成果已保留为失败草稿（见顶部），可恢复重试');
+    }
   };
 
   const locate = (asset: ImageAsset) => {
-    if (missionWaypoints.length === 0) return;
-    let best = missionWaypoints[0];
+    if (batchWaypoints.length === 0) return;
+    let best = batchWaypoints[0];
     let bestDist = Number.POSITIVE_INFINITY;
-    missionWaypoints.forEach((w) => {
+    batchWaypoints.forEach((w) => {
       const d = distanceMeters([asset.lng, asset.lat], [w.lng, w.lat]);
       if (d < bestDist) {
         bestDist = d;
@@ -106,22 +118,22 @@ export default function AssetCatalog() {
       }
     });
     setLocateSeq(best.seq);
-    setToast(`已定位到航点 #${best.seq}（距离 ${bestDist.toFixed(1)} m）`);
+    setToast(`已在 ${selected?.label} 定位到航点 #${best.seq}（距离 ${bestDist.toFixed(1)} m）`);
   };
 
   const exportList = () => {
-    const header = '片号,经度,纬度,航高m,GSDcm/px,重叠%,倾角°,质量,归档目录';
-    const lines = missionAssets.map((a) =>
-      [a.imageNo, a.lng, a.lat, a.altitude, a.gsd, a.overlap, a.tiltAngle, a.quality, a.folder].join(','),
+    const header = '批次,片号,经度,纬度,航高m,GSDcm/px,重叠%,倾角°,质量,归档目录';
+    const lines = batchAssets.map((a) =>
+      [selected?.label ?? '', a.imageNo, a.lng, a.lat, a.altitude, a.gsd, a.overlap, a.tiltAngle, a.quality, a.folder].join(','),
     );
     const blob = new Blob([[header, ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `成果影像清单_${mission?.missionNo ?? 'mission'}.csv`;
+    a.download = `成果影像清单_${mission?.missionNo ?? 'mission'}_${selected?.label ?? 'batch'}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    setToast(`已导出 ${lines.length} 条影像清单`);
+    setToast(`已导出 ${selected?.label} 的 ${lines.length} 条影像清单`);
   };
 
   if (!mission) {
@@ -140,7 +152,7 @@ export default function AssetCatalog() {
           成果影像编目 · {mission.missionNo}
         </Typography.Title>
         <Tag color="cyan">{mission.purpose}</Tag>
-        <Tag>条目 {missionAssets.length} 张</Tag>
+        <Tag>{selected?.label} 条目 {batchAssets.length} 张</Tag>
         <div style={{ flex: 1 }} />
         <Button type="link">
           <Link to={`/missions/${mission.id}/route`}>航线规划</Link>
@@ -153,8 +165,23 @@ export default function AssetCatalog() {
         </Button>
       </Space>
 
+      <Card size="small">
+        {selected ? <BatchSwitcher missionId={mission.id} value={selected.id} onChange={setBatchId} /> : null}
+      </Card>
+
+      <DraftBanner
+        missionId={mission.id}
+        onNoticed={(message, kind) => {
+          if (kind === 'error') setError(message);
+          else setToast(message);
+        }}
+      />
+
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
+      {selected && !selected.active ? (
+        <Alert type="info" showIcon message={`正在查看已冻结的 ${selected.label} 成果（拍摄时批次）；新拍成果请切到当前批次后提交。`} />
+      ) : null}
 
       <Row gutter={12}>
         {stats.map((s) => (
@@ -166,7 +193,7 @@ export default function AssetCatalog() {
         ))}
         <Col span={6}>
           <Card size="small">
-            <Statistic title="航点数量" value={missionWaypoints.length} suffix="个" />
+            <Statistic title="本批次航点" value={batchWaypoints.length} suffix="个" />
           </Card>
         </Col>
       </Row>
@@ -187,59 +214,59 @@ export default function AssetCatalog() {
             options={[{ value: 'all', label: '全部质量' }, ...IMAGE_QUALITIES.map((q) => ({ value: q, label: q }))]}
           />
           <Button type="primary" icon={<PlusOutlined />} onClick={catalogFromWaypoints}>
-            按航点批量编目
+            按本批次航点编目并提交
           </Button>
           <Button
-            disabled={selected.length === 0}
+            disabled={selectedIds.length === 0}
             onClick={async () => {
-              await markMany(selected, '合格');
-              setToast(`已把 ${selected.length} 张标记为「合格」`);
+              await markMany(selectedIds, '合格');
+              setToast(`已把 ${selectedIds.length} 张标记为「合格」`);
             }}
           >
             标记合格
           </Button>
           <Button
-            disabled={selected.length === 0}
+            disabled={selectedIds.length === 0}
             onClick={async () => {
-              await markMany(selected, '模糊');
-              setToast(`已把 ${selected.length} 张标记为「模糊」`);
+              await markMany(selectedIds, '模糊');
+              setToast(`已把 ${selectedIds.length} 张标记为「模糊」`);
             }}
           >
             标记模糊
           </Button>
           <Button
-            disabled={selected.length === 0}
+            disabled={selectedIds.length === 0}
             onClick={async () => {
-              await markMany(selected, '过曝');
-              setToast(`已把 ${selected.length} 张标记为「过曝」`);
+              await markMany(selectedIds, '过曝');
+              setToast(`已把 ${selectedIds.length} 张标记为「过曝」`);
             }}
           >
             标记过曝
           </Button>
           <Button
             danger
-            disabled={selected.length === 0}
+            disabled={selectedIds.length === 0}
             onClick={async () => {
-              await removeMany(selected);
-              setToast(`已删除 ${selected.length} 条影像条目`);
+              await removeMany(selectedIds);
+              setToast(`已删除 ${selectedIds.length} 条影像条目`);
               setSelected([]);
             }}
           >
             删除选中
           </Button>
-          <Button icon={<DownloadOutlined />} onClick={exportList} disabled={missionAssets.length === 0}>
-            导出成果清单
+          <Button icon={<DownloadOutlined />} onClick={exportList} disabled={batchAssets.length === 0}>
+            导出本批次清单
           </Button>
         </Space>
       </Card>
 
       <Row gutter={14}>
         <Col span={16}>
-          <Card size="small" title={`影像格子（筛选后 ${filtered.length} 张）`}>
+          <Card size="small" title={`${selected?.label ?? ''} 影像格子（筛选后 ${filtered.length} 张）`}>
             <AssetGrid
               assets={filtered}
               thumbs={thumbs}
-              selectedIds={selected}
+              selectedIds={selectedIds}
               onToggle={(assetId) =>
                 setSelected((prev) => (prev.includes(assetId) ? prev.filter((x) => x !== assetId) : [...prev, assetId]))
               }
@@ -249,11 +276,13 @@ export default function AssetCatalog() {
           </Card>
         </Col>
         <Col span={8}>
-          <Card size="small" title="定位到图">
+          <Card size="small" title={`定位到图（${selected?.label ?? ''}）`}>
             <AmapRouteView
               mission={mission}
-              waypoints={missionWaypoints}
-              altitude={missionWaypoints[0]?.altitude ?? 120}
+              camera={selected?.camera}
+              tint={selected?.active ? '#e07a2f' : '#7a8794'}
+              waypoints={batchWaypoints}
+              altitude={selected?.altitude ?? 120}
               height={340}
               highlightSeq={locateSeq}
             />

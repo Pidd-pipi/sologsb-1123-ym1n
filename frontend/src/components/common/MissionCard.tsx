@@ -9,6 +9,8 @@ export interface MissionCardProps {
   waypointCount?: number;
   assetCount?: number;
   lineCount?: number;
+  batchCount?: number;
+  activeEstPhotos?: number;
   onOpen?: (id: string) => void;
   footer?: ReactNode;
 }
@@ -20,8 +22,17 @@ const STATUS_COLOR: Record<string, string> = {
   已归档: 'purple',
 };
 
-/** 任务摘要卡（编号、测区、机型、日期、航点数），被任务台账、航线规划页消费 */
-export default function MissionCard({ mission, waypointCount, assetCount, lineCount, onOpen, footer }: MissionCardProps) {
+/** 任务摘要卡（编号、测区、机型、日期、批次/航点/成果数），被任务台账、航线规划页消费 */
+export default function MissionCard({
+  mission,
+  waypointCount,
+  assetCount,
+  lineCount,
+  batchCount,
+  activeEstPhotos,
+  onOpen,
+  footer,
+}: MissionCardProps) {
   return (
     <Card
       size="small"
@@ -45,6 +56,8 @@ export default function MissionCard({ mission, waypointCount, assetCount, lineCo
         <Descriptions.Item label="相机">{mission.cameraModel}</Descriptions.Item>
         <Descriptions.Item label="航点">{waypointCount ?? 0} 个</Descriptions.Item>
         <Descriptions.Item label="航线">{lineCount ?? 0} 条</Descriptions.Item>
+        <Descriptions.Item label="批次">{batchCount ?? 1} 个（含冻结）</Descriptions.Item>
+        <Descriptions.Item label="当前批次预计张数">{activeEstPhotos ?? 0} 张</Descriptions.Item>
         <Descriptions.Item label="成果条目">{assetCount ?? 0} 张</Descriptions.Item>
         <Descriptions.Item label="测区面积">{polygonAreaM2(mission.areaPolygon).toFixed(0)} m²</Descriptions.Item>
         <Descriptions.Item label="飞手">{mission.pilot}</Descriptions.Item>

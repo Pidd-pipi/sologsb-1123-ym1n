@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
-import { Badge, Layout, Menu, Space, Spin, Tag, Typography } from 'antd';
-import { RocketOutlined } from '@ant-design/icons';
+import { Badge, Button, Layout, Menu, Space, Spin, Tag, Tooltip, Typography } from 'antd';
+import { RocketOutlined, CloudSyncOutlined } from '@ant-design/icons';
 import { useMissionStore } from '../stores/missionStore';
 import { useWaypointStore } from '../stores/waypointStore';
 import { useAssetStore } from '../stores/assetStore';
+import { useBatchStore } from '../stores/batchStore';
 import { ensureSeedData, markDbVersion, readDbVersion } from '../utils/db';
+import { onTick } from '../utils/tick';
 import { hasAmapKey } from '../utils/amapLoader';
 import MissionList from '../pages/MissionList';
 import RoutePlanner from '../pages/RoutePlanner';
@@ -19,6 +21,7 @@ function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
   const missions = useMissionStore((s) => s.items);
+  const drafts = useBatchStore((s) => s.drafts);
   const version = readDbVersion();
   const firstMissionId = missions[0]?.id;
 
@@ -60,6 +63,20 @@ function Shell() {
           style={{ flex: 1, minWidth: 0, background: 'transparent' }}
         />
         <Space size={8}>
+          {drafts.length > 0 ? (
+            <Tooltip title={`有 ${drafts.length} 份保存失败 / 过期冲突草稿待处理，点击前往`}>
+              <Badge count={drafts.length} size="small">
+                <Button
+                  size="small"
+                  danger
+                  icon={<CloudSyncOutlined />}
+                  onClick={() => navigate(`/missions/${drafts[0].missionId}/route`)}
+                >
+                  {drafts.some((d) => d.status === 'conflict') ? '冲突草稿' : '失败草稿'}
+                </Button>
+              </Badge>
+            </Tooltip>
+          ) : null}
           <Tag color={hasAmapKey() ? 'green' : 'gold'}>
             {hasAmapKey() ? '高德 JS API' : '本地 SVG 网格视图'}
           </Tag>
@@ -81,25 +98,35 @@ function Shell() {
   );
 }
 
-/** 应用路由 + 本地数据引导（IndexedDB 迁移 + 示范数据） */
+/** 应用路由 + 本地数据引导（IndexedDB 迁移 + 示范数据 + 跨标签页批次同步） */
 export default function AppRouter() {
   const [ready, setReady] = useState(false);
   const loadMissions = useMissionStore((s) => s.load);
   const loadWaypoints = useWaypointStore((s) => s.load);
   const loadAssets = useAssetStore((s) => s.load);
+  const loadBatches = useBatchStore((s) => s.load);
 
   useEffect(() => {
     let alive = true;
     (async () => {
       await ensureSeedData();
       markDbVersion();
-      await Promise.all([loadMissions(), loadWaypoints(), loadAssets()]);
+      await Promise.all([loadMissions(), loadWaypoints(), loadAssets(), loadBatches()]);
       if (alive) setReady(true);
     })();
     return () => {
       alive = false;
     };
-  }, [loadMissions, loadWaypoints, loadAssets]);
+  }, [loadMissions, loadWaypoints, loadAssets, loadBatches]);
+
+  // 其它标签页提交批次数据后，本标签页重新从 IndexedDB 拉取（乐观锁仍兜底冲突）
+  useEffect(() => {
+    if (!ready) return;
+    const off = onTick(() => {
+      void Promise.all([loadBatches(), loadWaypoints(), loadAssets(), loadMissions()]);
+    });
+    return off;
+  }, [ready, loadBatches, loadWaypoints, loadAssets, loadMissions]);
 
   if (!ready) {
     return (

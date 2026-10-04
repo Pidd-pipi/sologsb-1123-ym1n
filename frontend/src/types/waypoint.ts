@@ -7,6 +7,8 @@ export const WAYPOINT_ACTIONS: WaypointAction[] = ['拍照', '悬停', '转弯']
 export interface Waypoint {
   id: string;
   missionId: string;
+  /** 所属航线批次 id；批次一旦冻结，其航点不再被改动 */
+  batchId: string;
   seq: number;
   lng: number;
   lat: number;
